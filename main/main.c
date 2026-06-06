@@ -13,19 +13,30 @@ static void energyboxx_task(void *pvParameters)
 {
     wifi_manager_wait_connected();
 
-    while (true)
+    while(true)
     {
-        ESP_LOGI(TAG, "Fetching Energyboxx data...");
-
-        esp_err_t err = energyboxx_api_get_test();
+        esp_err_t err = energyboxx_api_fetch_token();
 
         if (err != ESP_OK)
         {
-            ESP_LOGE(TAG, "Energyboxx request failed: %s", esp_err_to_name(err));
+            ESP_LOGE(TAG, "Failed to fetch token: %s", esp_err_to_name(err));
+            vTaskDelete(NULL); //TODO Don't delete the task, but retry with some backoff strategy
+            return;
         }
 
-        vTaskDelay(pdMS_TO_TICKS(120000));
+        esp_err_t test_err = energyboxx_api_get_test();
+
+        if (test_err != ESP_OK)
+        {
+            ESP_LOGE(TAG, "Failed to perform test API call: %s", esp_err_to_name(test_err));
+            vTaskDelete(NULL);
+            return;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(90 * 1000)); // Wait for 90 seconds.
     }
+
+    vTaskDelete(NULL);
 }
 
 void app_main(void)
