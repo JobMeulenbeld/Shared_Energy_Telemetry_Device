@@ -1,5 +1,18 @@
 idf_component_register(
-    SRCS "main.c"
-    INCLUDE_DIRS "."
-    REQUIRES esp_wifi nvs_flash esp_netif
+    SRCS
+        "main.c"
+        "src/wifi_manager.c"
+        "src/energyboxx_api.c"
+    INCLUDE_DIRS
+        "."
+        "inc"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        nvs_flash
+        esp_http_client
+        esp-tls
+        mbedtls
+        esp_timer
 )
