@@ -81,15 +81,66 @@ static void energyboxx_task(void *pvParameters)
     vTaskDelete(NULL);
 }
 
+void task_reset_boot_count(void *pvParameters)
+{
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    nvs_handle_t nvs_handle;
+    ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+    ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", 0));
+    ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+    nvs_close(nvs_handle);
+    vTaskDelete(NULL);
+}
+
 void app_main(void)
 {
     ESP_ERROR_CHECK(wifi_storage_init());
+
+    //Read boot count from NVS
+    nvs_handle_t nvs_handle;
+    uint32_t boot_count = 0;
+
+    ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+
+    esp_err_t err = nvs_get_u32(nvs_handle, "boot_count", &boot_count);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        boot_count = 0;
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
+
+    //Increment boot count and save it back to NVS
+    boot_count++;
+    ESP_LOGW(TAG, "Boot count: %u", boot_count);
+
+    ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", boot_count));
+    ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+    nvs_close(nvs_handle);
+
+    if(boot_count >= 3) {
+        ESP_LOGW(TAG, "Boot count exceeded 3, clearing WiFi credentials");
+        ESP_ERROR_CHECK(wifi_storage_clear_credentials());
+        ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+        ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", 0));
+        ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+        nvs_close(nvs_handle);
+    }
+
+    //Start a timer that resets the boot count after 10 seconds
+    //This is to prevent the device from getting stuck in a boot loop if it fails to connect to WiFi
+    xTaskCreate(
+        task_reset_boot_count,
+        "boot_count_reset_task",
+        2048,
+        NULL,
+        5,
+        NULL
+    );
 
     if (reset_button_held_on_boot()) {
         ESP_LOGW(TAG, "WiFi reset button held, clearing credentials");
         ESP_ERROR_CHECK(wifi_storage_clear_credentials());
     }
-
 
     ESP_ERROR_CHECK(wifi_prov_init());
 

@@ -174,7 +174,8 @@ esp_err_t wifi_prov_start_ap(void)
     };
 
     ESP_LOGI(TAG, "Starting provisioning AP: %s", PROV_AP_SSID);
-
+    
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_config));
 
     wifi_set_state(WIFI_PROV_STATE_AP_ACTIVE);
