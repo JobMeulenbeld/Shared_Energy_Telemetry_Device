@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <inttypes.h>
 
+#include "esp_err.h"
 #include "secrets.h"
 
 #include "energyboxx_api.h"
@@ -18,9 +19,13 @@
 
 #define TOKEN_REFRESH_MARGIN_SECONDS (5 * 60)
 
+#define RESPONSE_BUFFER_SIZE 4096
+
 static char access_token[2048] = {0};
 static int expires_in_seconds = 0;
 static int64_t token_acquired_us = 0;
+
+static bool renew_token = true;
 
 static const char *TAG = "energyboxx_api";
 
@@ -29,16 +34,23 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     switch (evt->event_id)
     {
     case HTTP_EVENT_ON_DATA:
-    if (evt->user_data != NULL)
-    {
-        strncat((char *)evt->user_data, (char *)evt->data, evt->data_len);
-    }
-    else
-    {
-        printf("%.*s", evt->data_len, (char *)evt->data);
-    }
-    printf("\n");
-    break;
+        if (evt->user_data != NULL)
+        {
+            printf("%.*s", evt->data_len, (char *)evt->data);
+            printf("\n");
+            char *buf = (char *)evt->user_data;
+            size_t used = strlen(buf); //This works because its a string buffer initialized wiht 0's
+            size_t remaining = RESPONSE_BUFFER_SIZE - used - 1;
+            if (evt->data_len > remaining) return ESP_ERR_INVALID_SIZE;
+            memcpy(buf + used, evt->data, evt->data_len);
+            buf[used + evt->data_len] = '\0';
+        }
+        else
+        {
+            printf("%.*s", evt->data_len, (char *)evt->data);
+        }
+        printf("\n");
+        break;
 
     case HTTP_EVENT_ON_FINISH:
         ESP_LOGI(TAG, "HTTP request finished");
@@ -59,18 +71,20 @@ esp_err_t energyboxx_api_fetch_token(void)
 {
     int64_t elapsed_seconds = (esp_timer_get_time() - token_acquired_us) / 1000000;
 
-    if (expires_in_seconds > 0 && elapsed_seconds < expires_in_seconds - TOKEN_REFRESH_MARGIN_SECONDS)
+    if ((expires_in_seconds > 0) && (elapsed_seconds < expires_in_seconds - TOKEN_REFRESH_MARGIN_SECONDS) && renew_token == false)
     {
         ESP_LOGI(TAG, "Token still valid for %d more seconds, skipping fetch", expires_in_seconds - (int)elapsed_seconds);
         return ESP_OK;
     }
+
+    renew_token = false;
     
     const char *post_data =
         "grant_type=client_credentials"
         "&client_id=" CLIENT_ID
         "&client_secret=" CLIENT_SECRET;
 
-    char response_buffer[4096] = {0};
+    char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
 
     esp_http_client_config_t config = {
         .url = "https://energyboxx.grexx.today/oauth/access_token",
@@ -157,13 +171,24 @@ const char *energyboxx_api_get_token(void)
     return access_token;
 }
 
-esp_err_t energyboxx_api_get_test(void)
+esp_err_t energyboxx_api_get_test(energyboxx_data_t* data)
 {
+    esp_err_t err = ESP_OK;
+
+    if (data == NULL)
+    {
+        ESP_LOGE(TAG, "Null output struct pointer");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
+
     esp_http_client_config_t config = {
         .url = ENERGYBOXX_DATA_URL,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 10000,
         .event_handler = http_event_handler,
+        .user_data = response_buffer,
     };
 
     if (strlen(access_token) == 0)
@@ -184,11 +209,45 @@ esp_err_t energyboxx_api_get_test(void)
 
     snprintf(auth_header, sizeof(auth_header), "Bearer %s", access_token);
 
-    esp_http_client_set_header(client, "Authorization", auth_header);
+    err = esp_http_client_set_header(client, "Authorization", auth_header);
+    if(err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to set Authorization header: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
+    }
 
-    esp_http_client_set_header(client, "Accept", "application/json");
+    err = esp_http_client_set_header(client, "Accept", "application/json");
+    if(err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to set Accept header: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
+    }
 
-    esp_err_t err = esp_http_client_perform(client);
+    err = esp_http_client_perform(client);
+
+    int status = esp_http_client_get_status_code(client);
+    ESP_LOGI(TAG, "Status = %d", status);
+    ESP_LOGI(TAG, "Response: %s", response_buffer);
+
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "GET request failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
+    }
+
+    if (status == 401 || status == 403 || strstr(response_buffer, "\"AUTH-1000\"")) {
+        ESP_LOGW(TAG, "Auth failed, token should be refreshed");
+        esp_http_client_cleanup(client);
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "Unexpected HTTP status: %d", status);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
 
     if (err == ESP_OK)
     {
@@ -197,6 +256,89 @@ esp_err_t energyboxx_api_get_test(void)
 
         ESP_LOGI(TAG, "Content length = %" PRId64,
                  esp_http_client_get_content_length(client));
+
+
+        cJSON *root = cJSON_Parse(response_buffer);
+        if (root == NULL)
+        {
+            ESP_LOGE(TAG, "Failed to parse JSON response");
+            esp_http_client_cleanup(client);
+            return ESP_FAIL;
+        }
+
+        cJSON *import_kw = cJSON_GetObjectItemCaseSensitive(root, "community_power_import_kw");
+        if (cJSON_IsNumber(import_kw))
+        {
+            data->community_power_import_kw = (float)import_kw->valuedouble;
+        }
+        else
+        {
+            data->community_power_import_kw = 0.0f;
+        }
+
+        cJSON *export_kw = cJSON_GetObjectItemCaseSensitive(root, "community_power_export_kw");
+        if (cJSON_IsNumber(export_kw))
+        {
+            data->community_power_export_kw = (float)export_kw->valuedouble;
+        }
+        else
+        {
+            data->community_power_export_kw = 0.0f;
+        }
+        cJSON *result_kw = cJSON_GetObjectItemCaseSensitive(root, "community_power_result_kw");
+        if (cJSON_IsNumber(result_kw))
+        {
+            data->community_power_result_kw = (float)result_kw->valuedouble;
+        }
+        else
+        {
+            data->community_power_result_kw = 0.0f;
+        }
+
+        cJSON *import_price = cJSON_GetObjectItemCaseSensitive(root, "community_import_price_eur");
+        if (cJSON_IsNumber(import_price))
+        {
+            data->community_import_price_eur = (float)import_price->valuedouble;
+        }
+        else
+        {
+            data->community_import_price_eur = 0.0f;
+        }
+
+        cJSON *export_price = cJSON_GetObjectItemCaseSensitive(root, "community_export_price_eur");
+        if (cJSON_IsNumber(export_price))
+        {
+            data->community_export_price_eur = (float)export_price->valuedouble;
+        }
+        else
+        {
+            data->community_export_price_eur = 0.0f;
+        }
+
+        cJSON *shared_import_price = cJSON_GetObjectItemCaseSensitive(root, "community_shared_import_price_eur");
+        if (cJSON_IsNumber(shared_import_price))
+        {
+            data->community_shared_import_price_eur = (float)shared_import_price->valuedouble;
+        }
+        else
+        {
+            data->community_shared_import_price_eur = 0.0f;
+        }
+
+        cJSON *shared_export_price = cJSON_GetObjectItemCaseSensitive(root, "community_shared_export_price_eur");
+        if (cJSON_IsNumber(shared_export_price))
+        {
+            data->community_shared_export_price_eur = (float)shared_export_price->valuedouble;
+        }
+        else
+        {
+            data->community_shared_export_price_eur = 0.0f;
+        }
+
+        cJSON_Delete(root);
+        esp_http_client_cleanup(client);
+
+        return ESP_OK;
     }
     else
     {
@@ -206,4 +348,34 @@ esp_err_t energyboxx_api_get_test(void)
     esp_http_client_cleanup(client);
 
     return err;
+}
+
+void energyboxx_data_print(const energyboxx_data_t *data)
+{
+    if (data == NULL)
+    {
+        ESP_LOGE(TAG, "energyboxx_data_print: null data pointer");
+        return;
+    }
+
+    ESP_LOGI(TAG, "Energyboxx data:");
+    ESP_LOGI(TAG, "  community_power_import_kw       = %.6f",
+             data->community_power_import_kw);
+    ESP_LOGI(TAG, "  community_power_export_kw       = %.6f",
+             data->community_power_export_kw);
+    ESP_LOGI(TAG, "  community_power_result_kw       = %.6f",
+             data->community_power_result_kw);
+    ESP_LOGI(TAG, "  community_export_price_eur      = %.6f",
+             data->community_export_price_eur);
+    ESP_LOGI(TAG, "  community_import_price_eur      = %.6f",
+             data->community_import_price_eur);
+    ESP_LOGI(TAG, "  community_shared_import_price_eur = %.6f",
+             data->community_shared_import_price_eur);
+    ESP_LOGI(TAG, "  community_shared_export_price_eur = %.6f",
+             data->community_shared_export_price_eur);
+}
+
+void energyboxx_api_set_renew_token(bool renew){
+    
+    renew_token = renew;
 }

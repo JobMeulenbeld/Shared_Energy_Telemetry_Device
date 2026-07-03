@@ -1,8 +1,8 @@
-#include <string.h>
 
 #include "wifi_manager.h"
 
 #include "freertos/FreeRTOS.h"
+#include <string.h>
 #include "freertos/event_groups.h"
 
 #include "esp_wifi.h"
@@ -10,10 +10,9 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 
-static const char *TAG = "wifi_manager";
+#include "secrets.h"
 
-#define WIFI_SSID "Ziggo3952603" 
-#define WIFI_PASSWORD "knv7vbnk7hmhCkbh"
+static const char *TAG = "wifi_manager";
 
 #define WIFI_CONNECTED_BIT BIT0
 
