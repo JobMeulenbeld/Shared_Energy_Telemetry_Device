@@ -2,15 +2,16 @@
 #include "freertos/task.h"
 
 #include "esp_log.h"
-#include "nvs_flash.h"
+#include "nvs.h"
 #include "driver/gpio.h"
 
+#include "inc/api_storage.h"
 #include "inc/wifi_storage.h"
 #include "inc/wifi_provisioning.h"
 #include "inc/wifi_web.h"
 #include "inc/energyboxx_api.h"
 
-static const char *TAG = "main";
+static const char *TAG = "[main]";
 energyboxx_data_t data;
 
 #define RESET_WIFI_GPIO GPIO_NUM_17
@@ -46,15 +47,36 @@ static bool reset_button_held_on_boot(void)
     return true;
 }
 
+static bool validate_stored_api_credentials(void)
+{
+    char client_id[128] = {0};
+    char client_secret[256] = {0};
+
+    if (api_storage_load_credentials(client_id, sizeof(client_id), client_secret, sizeof(client_secret)) != ESP_OK) {
+        ESP_LOGW(TAG, "API credentials not found in storage");
+        return false;
+    }
+
+    if (energyboxx_api_setup(client_id, client_secret) != ESP_OK) {
+        ESP_LOGW(TAG, "Stored API credentials could not be loaded");
+        return false;
+    }
+
+    if (energyboxx_api_fetch_token() != ESP_OK) {
+        ESP_LOGW(TAG, "Stored API credentials are invalid");
+        return false;
+    }
+
+    return true;
+}
+
 static void energyboxx_task(void *pvParameters)
 {
+   
     while(true)
     {
         //Check if WiFi is connected
 
-        ESP_LOGI(TAG, "free heap: %lu", esp_get_free_heap_size());
-        ESP_LOGI(TAG, "min free heap: %lu", esp_get_minimum_free_heap_size());
-        ESP_LOGI(TAG, "largest block: %u", heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
         esp_err_t err = energyboxx_api_fetch_token();
         if (err != ESP_OK)
         {
@@ -74,10 +96,21 @@ static void energyboxx_task(void *pvParameters)
         }
 
         energyboxx_data_print(&data);
-        ESP_LOGI(TAG, "stack watermark: %u", uxTaskGetStackHighWaterMark(NULL));
         vTaskDelay(pdMS_TO_TICKS(90 * 1000)); // Wait for 90 seconds.
     }
 
+    vTaskDelete(NULL);
+}
+
+void task_reset_boot_count(void *pvParameters)
+{
+    vTaskDelay(pdMS_TO_TICKS(10000));
+    nvs_handle_t nvs_handle;
+    ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+    ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", 0));
+    ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+    nvs_close(nvs_handle);
+    ESP_LOGW(TAG, "Boot count reset to 0");
     vTaskDelete(NULL);
 }
 
@@ -85,18 +118,60 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(wifi_storage_init());
 
+    //Read boot count from NVS
+    nvs_handle_t nvs_handle;
+    uint32_t boot_count = 0;
+
+    ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+
+    esp_err_t err = nvs_get_u32(nvs_handle, "boot_count", &boot_count);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        boot_count = 0;
+    } else {
+        ESP_ERROR_CHECK(err);
+    }
+
+    //Increment boot count and save it back to NVS
+    boot_count++;
+    ESP_LOGW(TAG, "Boot count: %u", boot_count);
+
+    ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", boot_count));
+    ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+    nvs_close(nvs_handle);
+
+    if(boot_count >= 3) {
+        ESP_LOGW(TAG, "Boot count exceeded 3, clearing WiFi credentials");
+        ESP_ERROR_CHECK(wifi_storage_clear_credentials());
+        ESP_ERROR_CHECK(api_storage_clear_credentials());
+        ESP_ERROR_CHECK(nvs_open("boot_count", NVS_READWRITE, &nvs_handle));
+        ESP_ERROR_CHECK(nvs_set_u32(nvs_handle, "boot_count", 0));
+        ESP_ERROR_CHECK(nvs_commit(nvs_handle));
+        nvs_close(nvs_handle);
+    }
+
+    //Start a timer that resets the boot count after 10 seconds
+    //This is to prevent the device from getting stuck in a boot loop if it fails to connect to WiFi
+    xTaskCreate(
+        task_reset_boot_count,
+        "boot_count_reset_task",
+        2048,
+        NULL,
+        5,
+        NULL
+    );
+
     if (reset_button_held_on_boot()) {
         ESP_LOGW(TAG, "WiFi reset button held, clearing credentials");
         ESP_ERROR_CHECK(wifi_storage_clear_credentials());
+        ESP_ERROR_CHECK(api_storage_clear_credentials());
     }
-
 
     ESP_ERROR_CHECK(wifi_prov_init());
 
     char ssid[33] = {0};
     char password[65] = {0};
 
-    bool started_provisioning = false;
+    bool wifi_provisioning_started = false;
 
     if (wifi_storage_load_credentials(ssid, sizeof(ssid), password, sizeof(password)) == ESP_OK) {
         ESP_ERROR_CHECK(wifi_prov_connect(ssid, password));
@@ -105,16 +180,21 @@ void app_main(void)
             ESP_LOGW(TAG, "Saved WiFi failed, starting provisioning");
             ESP_ERROR_CHECK(wifi_prov_start_ap());
             ESP_ERROR_CHECK(wifi_web_start());
-            started_provisioning = true;
+            wifi_provisioning_started = true;
+        } else if (!validate_stored_api_credentials()) {
+            ESP_LOGW(TAG, "Stored API credentials are missing or invalid, starting AP provisioning");
+            ESP_ERROR_CHECK(wifi_prov_start_ap());
+            ESP_ERROR_CHECK(wifi_web_start());
+            wifi_provisioning_started = true;
         }
     } else {
         ESP_ERROR_CHECK(wifi_prov_start_ap());
         ESP_ERROR_CHECK(wifi_web_start());
-        started_provisioning = true;
+        wifi_provisioning_started = true;
     }
 
-    if (started_provisioning) {
-        wifi_prov_wait_until_connected();
+    if (wifi_provisioning_started) {
+        wifi_prov_wait_until_completed();
     }
 
     // ESP_ERROR_CHECK(wifi_manager_init());

@@ -6,6 +6,7 @@ idf_component_register(
         "src/wifi_web.c"
         "src/dns_server.c"
         "src/wifi_storage.c"
+        "src/api_storage.c"
     INCLUDE_DIRS
         "."
         "inc"

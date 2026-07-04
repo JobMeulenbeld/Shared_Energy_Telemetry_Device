@@ -3,9 +3,10 @@
 
 #include "inc/wifi_web.h"
 #include "inc/wifi_provisioning.h"
-#include "inc/dns_server.h"
+#include "inc/energyboxx_api.h"
+#include "inc/api_storage.h"
 
-static const char *TAG = "wifi_web";
+static const char *TAG = "[wifi_web]";
 
 static httpd_handle_t s_server = NULL;
 
@@ -17,6 +18,12 @@ static esp_err_t favicon_get_handler(httpd_req_t *req)
 
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
+    if (wifi_prov_is_connected()) {
+        httpd_resp_set_status(req, "303 See Other");
+        httpd_resp_set_hdr(req, "Location", "/api-setup");
+        return httpd_resp_send(req, "Redirecting to API setup", HTTPD_RESP_USE_STRLEN);
+    }
+
     const char *html =
         "<!DOCTYPE html>"
         "<html>"
@@ -93,7 +100,7 @@ static esp_err_t root_get_handler(httpd_req_t *req)
         "  const r=await fetch('/status');"
         "  const s=await r.json();"
         "  status.textContent='Status: '+s.state;"
-        "  if(s.state==='connected'){clearInterval(timer);status.textContent='Connected successfully!';}"
+        "  if(s.state==='connected'){clearInterval(timer);window.location.href='/api-setup';return;}"
         "  if(s.state==='failed'){clearInterval(timer);status.textContent='Could not connect. Check password.';btn.disabled=false;}"
         " },1000);"
         "}"
@@ -104,6 +111,73 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
+}
+
+static esp_err_t api_setup_get_handler(httpd_req_t *req)
+{
+    const bool api_ready = energyboxx_api_has_credentials() && energyboxx_api_is_valid_credentials();
+
+    const char *html =
+        "<!DOCTYPE html><html><head>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<title>SETD API Setup</title>"
+        "<style>"
+        "body{font-family:Arial,sans-serif;margin:0;background:#f4f6f8;color:#111;}"
+        ".card{max-width:420px;margin:40px auto;padding:24px;background:white;border-radius:16px;"
+        "box-shadow:0 8px 30px rgba(0,0,0,.12);}"
+        "label{display:block;margin-top:18px;font-weight:bold;}"
+        "input,button{width:100%;box-sizing:border-box;font-size:16px;padding:12px;margin-top:8px;"
+        "border-radius:10px;border:1px solid #ccc;}"
+        "button{background:#111;color:white;border:none;margin-top:24px;font-weight:bold;}"
+        "button:disabled{background:#999;}"
+        "#status{margin-top:18px;font-weight:bold;}"
+        "</style></head><body>"
+        "<div class='card'>"
+        "<h1>SETD API Setup</h1>"
+        "<p>Enter your API credentials.</p>"
+
+        "<label for='clientId'>Client ID</label>"
+        "<input id='clientId' type='text' placeholder='Client ID'>"
+
+        "<label for='clientSecret'>Client Secret</label>"
+        "<input id='clientSecret' placeholder='Client Secret'>"
+
+        "<button id='checkBtn' onclick='checkKeys()' %s>Check and save</button>"
+
+        "<div id='status'>Status: Ready</div>"
+        "</div>"
+
+        "<script>"
+        "const apiReady=%s;"
+        "if(apiReady){document.getElementById('checkBtn').disabled=true;}"
+        "async function checkKeys(){"
+        " const status=document.getElementById('status');"
+        " const btn=document.getElementById('checkBtn');"
+        " status.textContent='Status: Checking keys...';"
+        " btn.disabled=true;"
+        " const clientId=document.getElementById('clientId').value;"
+        " const clientSecret=document.getElementById('clientSecret').value;"
+        " try{"
+        "  const r=await fetch('/api-check',{"
+        "   method:'POST',"
+        "   headers:{'Content-Type':'application/x-www-form-urlencoded'},"
+        "   body:`client_id=${encodeURIComponent(clientId)}&client_secret=${encodeURIComponent(clientSecret)}`"
+        "  });"
+        "  const j=await r.json();"
+        "  if(j.ok){btn.disabled=true;status.textContent='Status: Validation successful, you can close this page!';return;}"
+        "  status.textContent=j.message||'Status: Invalid keys';"
+        "  btn.disabled=false;"
+        " }catch(e){status.textContent='Status: Check failed';btn.disabled=false;}"
+        "}"
+        "</script></body></html>";
+
+    char page[4096];
+    snprintf(page, sizeof(page), html,
+             api_ready ? "disabled" : "",
+             api_ready ? "true" : "false");
+
+    httpd_resp_set_type(req, "text/html");
+    return httpd_resp_send(req, page, HTTPD_RESP_USE_STRLEN);
 }
 
 static const char *state_to_string(wifi_prov_state_t state)
@@ -207,6 +281,67 @@ esp_err_t http_404_error_handler(httpd_req_t *req, httpd_err_code_t err)
     return ESP_OK;
 }
 
+static esp_err_t parse_api_credentials(httpd_req_t *req,
+                                       char *client_id,
+                                       size_t client_id_len,
+                                       char *client_secret,
+                                       size_t client_secret_len)
+{
+    char body[512] = {0};
+
+    int received = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (received <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "No body");
+        return ESP_FAIL;
+    }
+
+    body[received] = '\0';
+
+    if (httpd_query_key_value(body, "client_id", client_id, client_id_len) != ESP_OK ||
+        httpd_query_key_value(body, "client_secret", client_secret, client_secret_len) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing credentials");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t api_check_post_handler(httpd_req_t *req)
+{
+    char client_id[128] = {0};
+    char client_secret[256] = {0};
+
+    if (parse_api_credentials(req, client_id, sizeof(client_id), client_secret, sizeof(client_secret)) != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"ok\":false,\"message\":\"Invalid request\"}");
+    }
+
+    esp_err_t err = energyboxx_api_setup(client_id, client_secret);
+    if (err != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"ok\":false,\"message\":\"Setup failed\"}");
+    }
+
+    err = energyboxx_api_fetch_token();
+    if (err != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"ok\":false,\"message\":\"Invalid Client ID or Client Secret\"}");
+    }
+
+    // If we reach here, the credentials are valid store them in flash
+    err = api_storage_save_credentials(client_id, client_secret);
+    if (err != ESP_OK) {
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_sendstr(req,
+            "{\"ok\":false,\"message\":\"Failed to save credentials\"}");
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
 
 esp_err_t wifi_web_start(void)
 {
@@ -216,6 +351,7 @@ esp_err_t wifi_web_start(void)
 
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
+    config.stack_size = 16384;
 
     ESP_LOGI(TAG, "Starting HTTP server");
 
@@ -259,6 +395,20 @@ esp_err_t wifi_web_start(void)
         .handler = scan_get_handler,
     };
 
+    httpd_uri_t api_setup_uri = {
+        .uri = "/api-setup",
+        .method = HTTP_GET,
+        .handler = api_setup_get_handler,
+        .user_ctx = NULL,
+    };
+
+    httpd_uri_t api_check_uri = {
+        .uri = "/api-check",
+        .method = HTTP_POST,
+        .handler = api_check_post_handler,
+        .user_ctx = NULL,
+    };
+
     err = httpd_register_uri_handler(s_server, &favicon_uri);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register favicon URI handler: %s", esp_err_to_name(err));
@@ -292,6 +442,18 @@ esp_err_t wifi_web_start(void)
     err = httpd_register_uri_handler(s_server, &scan_uri);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Failed to register scan URI handler: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = httpd_register_uri_handler(s_server, &api_setup_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register API setup URI handler: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    err = httpd_register_uri_handler(s_server, &api_check_uri);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to register API check URI handler: %s", esp_err_to_name(err));
         return err;
     }
 
