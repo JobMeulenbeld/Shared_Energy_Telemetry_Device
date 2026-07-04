@@ -21,7 +21,7 @@ esp_err_t wifi_prov_connect(const char *ssid, const char *password);
 esp_err_t wifi_prov_scan(wifi_ap_record_t *records, uint16_t *count);
 wifi_prov_state_t wifi_prov_get_state(void);
 bool wifi_prov_is_connected(void);
-void wifi_prov_wait_until_connected(void);
+void wifi_prov_wait_until_completed(void);
 bool wifi_prov_wait_for_connection_timeout(TickType_t timeout);
 
 #endif // WIFI_PROVISIONING_H

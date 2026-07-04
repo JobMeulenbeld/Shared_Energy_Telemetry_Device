@@ -13,6 +13,7 @@
 #include "inc/wifi_web.h"
 #include "inc/dns_server.h"
 #include "inc/wifi_storage.h"
+#include "inc/energyboxx_api.h"
 
 
 #define WIFI_CONNECTED_BIT BIT0
@@ -242,7 +243,7 @@ bool wifi_prov_is_connected(void)
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 
-void wifi_prov_wait_until_connected(void)
+void wifi_prov_wait_until_completed(void)
 {
     xEventGroupWaitBits(
         s_wifi_event_group,
@@ -250,6 +251,19 @@ void wifi_prov_wait_until_connected(void)
         pdFALSE,
         pdTRUE,
         portMAX_DELAY);
+
+    if (energyboxx_api_has_credentials() && !energyboxx_api_is_valid_credentials()) {
+        energyboxx_api_fetch_token();
+    }
+
+    // Wait until the API has been set up and validated
+    while (energyboxx_api_is_valid_credentials() == false) {
+        if (energyboxx_api_has_credentials()) {
+            energyboxx_api_fetch_token();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 
     vTaskDelay(pdMS_TO_TICKS(3000));
 

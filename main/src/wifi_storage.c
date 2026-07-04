@@ -4,7 +4,7 @@
 #include "nvs.h"
 #include "esp_log.h"
 
-static const char *TAG = "wifi_storage";
+static const char *TAG = "[wifi_storage]";
 
 #define WIFI_NAMESPACE "wifi_creds"
 #define KEY_SSID       "ssid"

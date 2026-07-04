@@ -2,7 +2,6 @@
 #include <inttypes.h>
 
 #include "esp_err.h"
-#include "secrets.h"
 
 #include "energyboxx_api.h"
 
@@ -25,9 +24,15 @@ static char access_token[2048] = {0};
 static int expires_in_seconds = 0;
 static int64_t token_acquired_us = 0;
 
+static char client_id[128] = {0};
+static char client_secret[256] = {0};
+
 static bool renew_token = true;
 
-static const char *TAG = "energyboxx_api";
+static const char *TAG = "[energyboxx_api]";
+
+static bool credentials_configured = false;
+static bool valid_credentials = false;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -36,8 +41,8 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_DATA:
         if (evt->user_data != NULL)
         {
-            printf("%.*s", evt->data_len, (char *)evt->data);
-            printf("\n");
+            // printf("%.*s", evt->data_len, (char *)evt->data);
+            // printf("\n");
             char *buf = (char *)evt->user_data;
             size_t used = strlen(buf); //This works because its a string buffer initialized wiht 0's
             size_t remaining = RESPONSE_BUFFER_SIZE - used - 1;
@@ -79,10 +84,14 @@ esp_err_t energyboxx_api_fetch_token(void)
 
     renew_token = false;
     
-    const char *post_data =
-        "grant_type=client_credentials"
-        "&client_id=" CLIENT_ID
-        "&client_secret=" CLIENT_SECRET;
+    char post_data[512];
+
+    snprintf(post_data, sizeof(post_data),
+            "grant_type=client_credentials"
+            "&client_id=%s"
+            "&client_secret=%s",
+            client_id,
+            client_secret);
 
     char response_buffer[RESPONSE_BUFFER_SIZE] = {0};
 
@@ -109,8 +118,8 @@ esp_err_t energyboxx_api_fetch_token(void)
 
     if (err == ESP_OK)
     {
-        ESP_LOGI(TAG, "Token status = %d", esp_http_client_get_status_code(client));
-        ESP_LOGI(TAG, "Token response: %s", response_buffer);
+        // ESP_LOGI(TAG, "Token status = %d", esp_http_client_get_status_code(client));
+        // ESP_LOGI(TAG, "Token response: %s", response_buffer);
         
         cJSON *root = cJSON_Parse(response_buffer);
 
@@ -156,6 +165,7 @@ esp_err_t energyboxx_api_fetch_token(void)
         ESP_LOGI(TAG, "Token expires in %d seconds", expires_in_seconds);
 
         cJSON_Delete(root);
+        valid_credentials = true;
     }
     else
     {
@@ -228,8 +238,8 @@ esp_err_t energyboxx_api_get_test(energyboxx_data_t* data)
     err = esp_http_client_perform(client);
 
     int status = esp_http_client_get_status_code(client);
-    ESP_LOGI(TAG, "Status = %d", status);
-    ESP_LOGI(TAG, "Response: %s", response_buffer);
+    // ESP_LOGI(TAG, "Status = %d", status);
+    // ESP_LOGI(TAG, "Response: %s", response_buffer);
 
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "GET request failed: %s", esp_err_to_name(err));
@@ -378,4 +388,35 @@ void energyboxx_data_print(const energyboxx_data_t *data)
 void energyboxx_api_set_renew_token(bool renew){
     
     renew_token = renew;
+}
+
+bool energyboxx_api_is_valid_credentials(){
+    return valid_credentials;
+}
+
+
+esp_err_t energyboxx_api_setup(const char *c_id, const char *c_secret){
+    
+    if (c_id == NULL || c_secret == NULL) {
+        ESP_LOGE(TAG, "Client ID or Client Secret is NULL");
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    strncpy(client_id, c_id, sizeof(client_id) - 1);
+    client_id[sizeof(client_id) - 1] = '\0';
+
+    strncpy(client_secret, c_secret, sizeof(client_secret) - 1);
+    client_secret[sizeof(client_secret) - 1] = '\0';
+
+    credentials_configured = true;
+    valid_credentials = false;
+
+    ESP_LOGI(TAG, "Energyboxx API setup completed with Client ID and Client Secret");
+
+    return ESP_OK;
+}
+
+bool energyboxx_api_has_credentials(void)
+{
+    return credentials_configured;
 }
