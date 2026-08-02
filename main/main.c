@@ -11,11 +11,21 @@
 #include "inc/wifi_web.h"
 #include "inc/energyboxx_api.h"
 
+
+#include "inc/status_led.h"
+#include "soc/gpio_num.h"
+
 static const char *TAG = "[main]";
 energyboxx_data_t data;
 
 #define RESET_WIFI_GPIO GPIO_NUM_17
 #define RESET_HOLD_MS   3000
+
+#define PERCENTAGE_LIMIT 10.0f // Maximum absolute value for community_power_result_kw to map to 100% on the LED ring
+#define BRIGHTNESS_PERCENTAGE 10.0f // Brightness percentage for the LED rings
+
+static led_ring_t led_ring_1;
+static led_ring_t led_ring_2;
 
 static bool reset_button_held_on_boot(void)
 {
@@ -70,6 +80,27 @@ static bool validate_stored_api_credentials(void)
     return true;
 }
 
+static void device_status_task(void *pvParameters)
+{
+    const led_rgb_t color = { .r = 0, .g = 0, .b = 255 }; // Blue
+    while (!wifi_prov_is_connected()) {
+        for (uint8_t i = 0; i < LED_RING_NUM_LEDS; i++) {
+            led_ring_clear(&led_ring_1);
+            led_ring_set_pixel(&led_ring_1, i, color);
+            led_ring_show(&led_ring_1);
+
+            vTaskDelay(pdMS_TO_TICKS(50));
+        }
+    }
+
+    led_ring_clear(&led_ring_1);
+    led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 0, .g = 255, .b = 0 }); // Green
+    led_ring_show(&led_ring_1);
+    vTaskDelay(pdMS_TO_TICKS(2000));
+
+    vTaskDelete(NULL);
+}
+
 static void energyboxx_task(void *pvParameters)
 {
    
@@ -85,7 +116,7 @@ static void energyboxx_task(void *pvParameters)
             return;
         }
 
-        err = energyboxx_api_get_test(&data);
+        err = energyboxx_api_get_data(&data);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to perform API call: %s", esp_err_to_name(err));
@@ -96,7 +127,44 @@ static void energyboxx_task(void *pvParameters)
         }
 
         energyboxx_data_print(&data);
-        vTaskDelay(pdMS_TO_TICKS(90 * 1000)); // Wait for 90 seconds.
+        if(data.community_power_result_kw < 0.0f)
+        {
+            ESP_LOGW(TAG, "Community is importing power");
+            //Calculate the percentage from 0 to -100% based on the community_power_result_kw value
+            float percentage = (-data.community_power_result_kw / PERCENTAGE_LIMIT) * 100.0f; // Assuming -10 kW is the maximum import power
+            if(percentage > 100.0f) percentage = 100.0f;
+            if(percentage < 0.0f) percentage = 0.0f;    
+            ESP_LOGW(TAG, "Filling LED ring 2 with %.2f%%", percentage);
+            led_ring_set_fill(&led_ring_2, percentage, (led_rgb_t){.r = 255, .g = 0, .b = 0});
+        }
+        else if(data.community_power_result_kw > 0.0f)
+        {
+            ESP_LOGW(TAG, "Community is exporting power");
+            //Calculate the percentage from 0 to 100% based on the community_power_result_kw value
+            float percentage = (data.community_power_result_kw / PERCENTAGE_LIMIT) * 100.0f; // Assuming 10 kW is the maximum export power
+            if(percentage > 100.0f) percentage = 100.0f;
+            if(percentage < 0.0f) percentage = 0.0f;    
+            ESP_LOGW(TAG, "Filling LED ring 2 with %.2f%%", percentage);
+            led_ring_set_fill(&led_ring_2, percentage, (led_rgb_t){.r = 0, .g = 255, .b = 0});
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Community is balanced");
+        }
+
+        
+        led_ring_clear(&led_ring_1);
+        led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
+        led_ring_show(&led_ring_1);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        led_ring_clear(&led_ring_1);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
+        led_ring_show(&led_ring_1);
+        vTaskDelay(pdMS_TO_TICKS(500));
+        led_ring_clear(&led_ring_1);
+
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000)); // Wait for 60 seconds.
     }
 
     vTaskDelete(NULL);
@@ -166,6 +234,22 @@ void app_main(void)
         ESP_ERROR_CHECK(api_storage_clear_credentials());
     }
 
+    //Start device status task
+    ESP_ERROR_CHECK(led_ring_init(&led_ring_1, GPIO_NUM_1));
+    ESP_ERROR_CHECK(led_ring_init(&led_ring_2, GPIO_NUM_2));
+    led_ring_set_brightness(&led_ring_1, BRIGHTNESS_PERCENTAGE); 
+    led_ring_set_brightness(&led_ring_2, BRIGHTNESS_PERCENTAGE); 
+
+    xTaskCreate(
+        device_status_task,
+        "device_status_task",
+        2048,
+        NULL,
+        5,
+        NULL
+    );
+
+
     ESP_ERROR_CHECK(wifi_prov_init());
 
     char ssid[33] = {0};
@@ -196,18 +280,6 @@ void app_main(void)
     if (wifi_provisioning_started) {
         wifi_prov_wait_until_completed();
     }
-
-    // ESP_ERROR_CHECK(wifi_manager_init());
-
-    // wifi_manager_wait_connected();
-
-    // esp_err_t err = energyboxx_api_fetch_token();
-    // if (err != ESP_OK)
-    // {
-    //     ESP_LOGE(TAG, "Failed to fetch token: %s", esp_err_to_name(err));
-    //     //vTaskDelete(NULL); //TODO Don't delete the task, but retry with some backoff strategy
-    //     return;
-    // }
 
     xTaskCreate(
         energyboxx_task,

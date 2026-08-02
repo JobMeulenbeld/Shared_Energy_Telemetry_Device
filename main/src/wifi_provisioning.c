@@ -239,6 +239,10 @@ esp_err_t wifi_prov_scan(wifi_ap_record_t *records, uint16_t *count)
 
 bool wifi_prov_is_connected(void)
 {
+    if (s_wifi_event_group == NULL) {
+        return false;
+    }
+
     EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }

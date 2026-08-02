@@ -181,7 +181,7 @@ const char *energyboxx_api_get_token(void)
     return access_token;
 }
 
-esp_err_t energyboxx_api_get_test(energyboxx_data_t* data)
+esp_err_t energyboxx_api_get_data(energyboxx_data_t* data)
 {
     esp_err_t err = ESP_OK;
 

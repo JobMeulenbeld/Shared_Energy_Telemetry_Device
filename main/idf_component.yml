@@ -3,6 +3,8 @@ dependencies:
   ## Required IDF version
   idf:
     version: ">=4.1.0"
+
+  espressif/led_strip: "^3.0.1"
     
   espressif/cjson: "^1.7.19"
   # # Put list of dependencies here
