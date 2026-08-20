@@ -22,9 +22,12 @@ energyboxx_data_t data;
 #define RESET_HOLD_MS   3000
 
 #define BRIGHTNESS_PERCENTAGE 10.0f // Brightness percentage for the LED rings
+#define POWER_BALANCE_DEADBAND_KW 0.05f
+#define API_RETRY_DELAY_MS 10000
 
 static led_ring_t led_ring_1;
 static led_ring_t led_ring_2;
+static volatile bool data_connection_ok = false;
 
 static void status_led_task(void *pvParameters)
 {
@@ -42,8 +45,8 @@ static void status_led_task(void *pvParameters)
             ESP_ERROR_CHECK(status_led_set_wifi(false));
         }
 
-        ESP_ERROR_CHECK(status_led_set_data(
-            energyboxx_api_is_valid_credentials() ? true : blink_on));
+        bool data_ready = energyboxx_api_is_valid_credentials() && data_connection_ok;
+        ESP_ERROR_CHECK(status_led_set_data(data_ready ? true : blink_on));
 
         blink_on = !blink_on;
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -108,33 +111,44 @@ static void energyboxx_task(void *pvParameters)
    
     while(true)
     {
-        //Check if WiFi is connected
+        if (!wifi_prov_is_connected()) {
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
+            continue;
+        }
 
         esp_err_t err = energyboxx_api_fetch_token();
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to fetch token: %s", esp_err_to_name(err));
-            vTaskDelete(NULL); //TODO Don't delete the task, but retry with some backoff strategy
-            return;
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
+            energyboxx_api_set_renew_token(true);
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
+            continue;
         }
 
         err = energyboxx_api_get_data(&data);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to perform API call: %s", esp_err_to_name(err));
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
             ESP_LOGW(TAG, "Renewing token in 10 seconds...");
-            vTaskDelay(pdMS_TO_TICKS(10 * 1000)); // Wait for 10 seconds before retrying
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
             energyboxx_api_set_renew_token(true);
             continue;
         }
 
+        data_connection_ok = true;
         energyboxx_data_print(&data);
-        if(data.community_power_result_kw < 0.0f)
+        if(data.community_power_result_kw < -POWER_BALANCE_DEADBAND_KW)
         {
             ESP_LOGW(TAG, "Community is importing power");
             led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
         }
-        else if(data.community_power_result_kw > 0.0f)
+        else if(data.community_power_result_kw > POWER_BALANCE_DEADBAND_KW)
         {
             ESP_LOGW(TAG, "Community is exporting power");
             led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 0, .g = 255, .b = 0 }); // Green
