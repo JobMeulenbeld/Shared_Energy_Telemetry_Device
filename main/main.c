@@ -21,11 +21,34 @@ energyboxx_data_t data;
 #define RESET_WIFI_GPIO GPIO_NUM_17
 #define RESET_HOLD_MS   3000
 
-#define PERCENTAGE_LIMIT 10.0f // Maximum absolute value for community_power_result_kw to map to 100% on the LED ring
 #define BRIGHTNESS_PERCENTAGE 10.0f // Brightness percentage for the LED rings
 
 static led_ring_t led_ring_1;
 static led_ring_t led_ring_2;
+
+static void status_led_task(void *pvParameters)
+{
+    bool blink_on = false;
+
+    while (true) {
+        wifi_prov_state_t wifi_state = wifi_prov_get_state();
+
+        if (wifi_state == WIFI_PROV_STATE_CONNECTED) {
+            ESP_ERROR_CHECK(status_led_set_wifi(true));
+        } else if (wifi_state == WIFI_PROV_STATE_AP_ACTIVE ||
+                   wifi_state == WIFI_PROV_STATE_CONNECT_FAILED) {
+            ESP_ERROR_CHECK(status_led_set_wifi(blink_on));
+        } else {
+            ESP_ERROR_CHECK(status_led_set_wifi(false));
+        }
+
+        ESP_ERROR_CHECK(status_led_set_data(
+            energyboxx_api_is_valid_credentials() ? true : blink_on));
+
+        blink_on = !blink_on;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
 
 static bool reset_button_held_on_boot(void)
 {
@@ -80,27 +103,6 @@ static bool validate_stored_api_credentials(void)
     return true;
 }
 
-static void device_status_task(void *pvParameters)
-{
-    const led_rgb_t color = { .r = 0, .g = 0, .b = 255 }; // Blue
-    while (!wifi_prov_is_connected()) {
-        for (uint8_t i = 0; i < LED_RING_NUM_LEDS; i++) {
-            led_ring_clear(&led_ring_1);
-            led_ring_set_pixel(&led_ring_1, i, color);
-            led_ring_show(&led_ring_1);
-
-            vTaskDelay(pdMS_TO_TICKS(50));
-        }
-    }
-
-    led_ring_clear(&led_ring_1);
-    led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 0, .g = 255, .b = 0 }); // Green
-    led_ring_show(&led_ring_1);
-    vTaskDelay(pdMS_TO_TICKS(2000));
-
-    vTaskDelete(NULL);
-}
-
 static void energyboxx_task(void *pvParameters)
 {
    
@@ -130,39 +132,18 @@ static void energyboxx_task(void *pvParameters)
         if(data.community_power_result_kw < 0.0f)
         {
             ESP_LOGW(TAG, "Community is importing power");
-            //Calculate the percentage from 0 to -100% based on the community_power_result_kw value
-            float percentage = (-data.community_power_result_kw / PERCENTAGE_LIMIT) * 100.0f; // Assuming -10 kW is the maximum import power
-            if(percentage > 100.0f) percentage = 100.0f;
-            if(percentage < 0.0f) percentage = 0.0f;    
-            ESP_LOGW(TAG, "Filling LED ring 2 with %.2f%%", percentage);
-            led_ring_set_fill(&led_ring_2, percentage, (led_rgb_t){.r = 255, .g = 0, .b = 0});
+            led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
         }
         else if(data.community_power_result_kw > 0.0f)
         {
             ESP_LOGW(TAG, "Community is exporting power");
-            //Calculate the percentage from 0 to 100% based on the community_power_result_kw value
-            float percentage = (data.community_power_result_kw / PERCENTAGE_LIMIT) * 100.0f; // Assuming 10 kW is the maximum export power
-            if(percentage > 100.0f) percentage = 100.0f;
-            if(percentage < 0.0f) percentage = 0.0f;    
-            ESP_LOGW(TAG, "Filling LED ring 2 with %.2f%%", percentage);
-            led_ring_set_fill(&led_ring_2, percentage, (led_rgb_t){.r = 0, .g = 255, .b = 0});
+            led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 0, .g = 255, .b = 0 }); // Green
         }
         else
         {
             ESP_LOGW(TAG, "Community is balanced");
+            led_ring_clear(&led_ring_2);
         }
-
-        
-        led_ring_clear(&led_ring_1);
-        led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
-        led_ring_show(&led_ring_1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        led_ring_clear(&led_ring_1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        led_ring_set_all(&led_ring_1, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
-        led_ring_show(&led_ring_1);
-        vTaskDelay(pdMS_TO_TICKS(500));
-        led_ring_clear(&led_ring_1);
 
         vTaskDelay(pdMS_TO_TICKS(60 * 1000)); // Wait for 60 seconds.
     }
@@ -185,6 +166,7 @@ void task_reset_boot_count(void *pvParameters)
 void app_main(void)
 {
     ESP_ERROR_CHECK(wifi_storage_init());
+    ESP_ERROR_CHECK(status_leds_init());
 
     //Read boot count from NVS
     nvs_handle_t nvs_handle;
@@ -240,17 +222,17 @@ void app_main(void)
     led_ring_set_brightness(&led_ring_1, BRIGHTNESS_PERCENTAGE); 
     led_ring_set_brightness(&led_ring_2, BRIGHTNESS_PERCENTAGE); 
 
-    xTaskCreate(
-        device_status_task,
-        "device_status_task",
+    ESP_ERROR_CHECK(wifi_prov_init());
+
+    BaseType_t status_task_created = xTaskCreate(
+        status_led_task,
+        "status_led_task",
         2048,
         NULL,
         5,
         NULL
     );
-
-
-    ESP_ERROR_CHECK(wifi_prov_init());
+    ESP_ERROR_CHECK(status_task_created == pdPASS ? ESP_OK : ESP_FAIL);
 
     char ssid[33] = {0};
     char password[65] = {0};

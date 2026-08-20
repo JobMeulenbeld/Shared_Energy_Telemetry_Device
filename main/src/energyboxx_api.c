@@ -82,6 +82,7 @@ esp_err_t energyboxx_api_fetch_token(void)
         return ESP_OK;
     }
 
+    valid_credentials = false;
     renew_token = false;
     
     char post_data[512];
@@ -249,6 +250,7 @@ esp_err_t energyboxx_api_get_data(energyboxx_data_t* data)
 
     if (status == 401 || status == 403 || strstr(response_buffer, "\"AUTH-1000\"")) {
         ESP_LOGW(TAG, "Auth failed, token should be refreshed");
+        valid_credentials = false;
         esp_http_client_cleanup(client);
         return ESP_ERR_INVALID_STATE;
     }

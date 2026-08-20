@@ -5,10 +5,16 @@
 
 #include "esp_err.h"
 #include <stdint.h>
+#include <stdbool.h>
+#include "driver/gpio.h"
 #include "led_strip.h"
 
 
 #define LED_RING_NUM_LEDS 8
+
+#define STATUS_LED_WIFI_GPIO  GPIO_NUM_44 // D7, blue
+#define STATUS_LED_POWER_GPIO GPIO_NUM_7  // D8, red
+#define STATUS_LED_DATA_GPIO  GPIO_NUM_8  // D9, blue
 
 typedef struct {
     uint8_t r;
@@ -38,4 +44,9 @@ esp_err_t led_ring_start_loop_async(
     uint32_t delay_ms,
     int loop_count
 );
+
+esp_err_t status_leds_init(void);
+esp_err_t status_led_set_wifi(bool on);
+esp_err_t status_led_set_power(bool on);
+esp_err_t status_led_set_data(bool on);
 #endif

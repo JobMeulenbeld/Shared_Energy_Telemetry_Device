@@ -7,6 +7,55 @@
 
 static const char *TAG = "led_ring";
 
+static bool status_leds_initialized = false;
+
+static esp_err_t status_led_set(gpio_num_t gpio, bool on)
+{
+    if (!status_leds_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    return gpio_set_level(gpio, on ? 1 : 0);
+}
+
+esp_err_t status_leds_init(void)
+{
+    gpio_config_t config = {
+        .pin_bit_mask = (1ULL << STATUS_LED_WIFI_GPIO) |
+                        (1ULL << STATUS_LED_POWER_GPIO) |
+                        (1ULL << STATUS_LED_DATA_GPIO),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+
+    esp_err_t err = gpio_config(&config);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    status_leds_initialized = true;
+    ESP_ERROR_CHECK(status_led_set_wifi(false));
+    ESP_ERROR_CHECK(status_led_set_data(false));
+    return status_led_set_power(true);
+}
+
+esp_err_t status_led_set_wifi(bool on)
+{
+    return status_led_set(STATUS_LED_WIFI_GPIO, on);
+}
+
+esp_err_t status_led_set_power(bool on)
+{
+    return status_led_set(STATUS_LED_POWER_GPIO, on);
+}
+
+esp_err_t status_led_set_data(bool on)
+{
+    return status_led_set(STATUS_LED_DATA_GPIO, on);
+}
+
 static uint8_t apply_brightness(uint8_t value, uint8_t brightness)
 {
     return ((uint16_t)value * brightness) / 255;
