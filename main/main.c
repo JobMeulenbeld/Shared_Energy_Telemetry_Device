@@ -11,11 +11,47 @@
 #include "inc/wifi_web.h"
 #include "inc/energyboxx_api.h"
 
+
+#include "inc/status_led.h"
+#include "soc/gpio_num.h"
+
 static const char *TAG = "[main]";
 energyboxx_data_t data;
 
 #define RESET_WIFI_GPIO GPIO_NUM_17
 #define RESET_HOLD_MS   3000
+
+#define BRIGHTNESS_PERCENTAGE 10.0f // Brightness percentage for the LED rings
+#define POWER_BALANCE_DEADBAND_KW 0.05f
+#define API_RETRY_DELAY_MS 10000
+
+static led_ring_t led_ring_1;
+static led_ring_t led_ring_2;
+static volatile bool data_connection_ok = false;
+
+static void status_led_task(void *pvParameters)
+{
+    bool blink_on = false;
+
+    while (true) {
+        wifi_prov_state_t wifi_state = wifi_prov_get_state();
+
+        if (wifi_state == WIFI_PROV_STATE_CONNECTED) {
+            ESP_ERROR_CHECK(status_led_set_wifi(true));
+        } else if (wifi_state == WIFI_PROV_STATE_AP_ACTIVE ||
+                   wifi_state == WIFI_PROV_STATE_CONNECT_FAILED) {
+            ESP_ERROR_CHECK(status_led_set_wifi(blink_on));
+        } else {
+            ESP_ERROR_CHECK(status_led_set_wifi(false));
+        }
+
+        bool data_ready = energyboxx_api_is_valid_credentials() && data_connection_ok;
+        ESP_ERROR_CHECK(status_led_set_data(data_ready ? true : blink_on));
+
+        blink_on = !blink_on;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
 
 static bool reset_button_held_on_boot(void)
 {
@@ -75,28 +111,55 @@ static void energyboxx_task(void *pvParameters)
    
     while(true)
     {
-        //Check if WiFi is connected
+        if (!wifi_prov_is_connected()) {
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
+            continue;
+        }
 
         esp_err_t err = energyboxx_api_fetch_token();
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to fetch token: %s", esp_err_to_name(err));
-            vTaskDelete(NULL); //TODO Don't delete the task, but retry with some backoff strategy
-            return;
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
+            energyboxx_api_set_renew_token(true);
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
+            continue;
         }
 
-        err = energyboxx_api_get_test(&data);
+        err = energyboxx_api_get_data(&data);
         if (err != ESP_OK)
         {
             ESP_LOGE(TAG, "Failed to perform API call: %s", esp_err_to_name(err));
+            data_connection_ok = false;
+            ESP_ERROR_CHECK(led_ring_clear(&led_ring_2));
             ESP_LOGW(TAG, "Renewing token in 10 seconds...");
-            vTaskDelay(pdMS_TO_TICKS(10 * 1000)); // Wait for 10 seconds before retrying
+            vTaskDelay(pdMS_TO_TICKS(API_RETRY_DELAY_MS));
             energyboxx_api_set_renew_token(true);
             continue;
         }
 
+        data_connection_ok = true;
         energyboxx_data_print(&data);
-        vTaskDelay(pdMS_TO_TICKS(90 * 1000)); // Wait for 90 seconds.
+        if(data.community_power_result_kw < -POWER_BALANCE_DEADBAND_KW)
+        {
+            ESP_LOGW(TAG, "Community is importing power");
+            led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 255, .g = 255, .b = 0 }); // Yellow
+        }
+        else if(data.community_power_result_kw > POWER_BALANCE_DEADBAND_KW)
+        {
+            ESP_LOGW(TAG, "Community is exporting power");
+            led_ring_set_all(&led_ring_2, (led_rgb_t){ .r = 0, .g = 255, .b = 0 }); // Green
+        }
+        else
+        {
+            ESP_LOGW(TAG, "Community is balanced");
+            led_ring_clear(&led_ring_2);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(60 * 1000)); // Wait for 60 seconds.
     }
 
     vTaskDelete(NULL);
@@ -117,6 +180,7 @@ void task_reset_boot_count(void *pvParameters)
 void app_main(void)
 {
     ESP_ERROR_CHECK(wifi_storage_init());
+    ESP_ERROR_CHECK(status_leds_init());
 
     //Read boot count from NVS
     nvs_handle_t nvs_handle;
@@ -166,7 +230,23 @@ void app_main(void)
         ESP_ERROR_CHECK(api_storage_clear_credentials());
     }
 
+    //Start device status task
+    ESP_ERROR_CHECK(led_ring_init(&led_ring_1, GPIO_NUM_1));
+    ESP_ERROR_CHECK(led_ring_init(&led_ring_2, GPIO_NUM_2));
+    led_ring_set_brightness(&led_ring_1, BRIGHTNESS_PERCENTAGE); 
+    led_ring_set_brightness(&led_ring_2, BRIGHTNESS_PERCENTAGE); 
+
     ESP_ERROR_CHECK(wifi_prov_init());
+
+    BaseType_t status_task_created = xTaskCreate(
+        status_led_task,
+        "status_led_task",
+        2048,
+        NULL,
+        5,
+        NULL
+    );
+    ESP_ERROR_CHECK(status_task_created == pdPASS ? ESP_OK : ESP_FAIL);
 
     char ssid[33] = {0};
     char password[65] = {0};
@@ -196,18 +276,6 @@ void app_main(void)
     if (wifi_provisioning_started) {
         wifi_prov_wait_until_completed();
     }
-
-    // ESP_ERROR_CHECK(wifi_manager_init());
-
-    // wifi_manager_wait_connected();
-
-    // esp_err_t err = energyboxx_api_fetch_token();
-    // if (err != ESP_OK)
-    // {
-    //     ESP_LOGE(TAG, "Failed to fetch token: %s", esp_err_to_name(err));
-    //     //vTaskDelete(NULL); //TODO Don't delete the task, but retry with some backoff strategy
-    //     return;
-    // }
 
     xTaskCreate(
         energyboxx_task,

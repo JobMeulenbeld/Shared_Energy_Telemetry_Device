@@ -7,6 +7,7 @@ idf_component_register(
         "src/dns_server.c"
         "src/wifi_storage.c"
         "src/api_storage.c"
+        "src/status_led.c"
     INCLUDE_DIRS
         "."
         "inc"
@@ -21,4 +22,5 @@ idf_component_register(
         esp-tls
         mbedtls
         esp_timer
+        led_strip
 )

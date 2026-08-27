@@ -59,17 +59,15 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base, int32_t e
 
         xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
 
-        if (s_state == WIFI_PROV_STATE_CONNECTING &&
-            s_retry_count < WIFI_MAX_RETRIES) {
+        if (s_retry_count < WIFI_MAX_RETRIES) {
             s_retry_count++;
+            wifi_set_state(WIFI_PROV_STATE_CONNECTING);
 
             ESP_LOGW(TAG, "Retrying WiFi connection %d/%d", s_retry_count, WIFI_MAX_RETRIES);
 
             esp_wifi_connect();
         } else {
             ESP_LOGE(TAG, "WiFi connection failed");
-            memset(current_ssid, 0, sizeof(current_ssid));
-            memset(current_password, 0, sizeof(current_password));
             wifi_set_state(WIFI_PROV_STATE_CONNECT_FAILED);
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
@@ -239,6 +237,10 @@ esp_err_t wifi_prov_scan(wifi_ap_record_t *records, uint16_t *count)
 
 bool wifi_prov_is_connected(void)
 {
+    if (s_wifi_event_group == NULL) {
+        return false;
+    }
+
     EventBits_t bits = xEventGroupGetBits(s_wifi_event_group);
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
