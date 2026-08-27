@@ -31,8 +31,8 @@ rings.
 
 | Function | Board pin | ESP32-S3 GPIO |
 | --- | --- | --- |
-| Unused LED ring | — | GPIO 1 |
-| Energy-status LED ring | — | GPIO 2 |
+| Unused LED ring | D0 | GPIO 1 |
+| Energy-status LED ring | D1 | GPIO 2 |
 | Wi-Fi status LED (blue) | D7 / RX | GPIO 44 |
 | Power status LED (red) | D8 | GPIO 7 |
 | Data status LED (blue) | D9 | GPIO 8 |
