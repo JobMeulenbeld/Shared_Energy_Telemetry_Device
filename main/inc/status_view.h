@@ -48,12 +48,11 @@ esp_err_t status_view_init(void);
 esp_err_t status_view_show(status_view_state_t state);
 
 //  Step through the views by hand. Direction is -1 for back and +1 for
-//  forward. Browsing never lasts: after a while without input the device goes
-//  back to showing what the telemetry says, because that is its job.
+//  forward. After inactivity, automatic alternation between the live energy
+//  screen and prices resumes. The two are adjacent in the browse order.
 void status_view_browse(int direction);
 
-//  Stop browsing at once and follow the telemetry again, without waiting for
-//  the timeout.
+//  Show the live screen immediately and restart its automatic rotation timer.
 void status_view_resume_auto(void);
 
 //  Somebody pressed the button under the view that is on screen. What that
