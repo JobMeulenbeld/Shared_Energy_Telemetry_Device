@@ -23,6 +23,7 @@
 #include "inc/energyboxx_api.h"
 
 #include "inc/display.h"
+#include "inc/day_ahead_view.h"
 #include "inc/status_view.h"
 #include "inc/updater.h"
 #include "inc/wifi_provisioning.h"
@@ -57,7 +58,7 @@ static const char *TAG = "[status_view]";
 //  whenever somebody looks at them, so they are never marked. This column is
 //  the whole rule; there is no second place that decides.
 
-typedef enum { PAINT_IMAGE = 0, PAINT_COLOUR, PAINT_REPORT, PAINT_ABOUT } paint_t;
+typedef enum { PAINT_IMAGE = 0, PAINT_COLOUR, PAINT_REPORT, PAINT_ABOUT, PAINT_PRICES } paint_t;
 
 static const struct {
     const char *name;
@@ -88,6 +89,8 @@ static const struct {
     [STATUS_VIEW_DEFICIT]      = { "deficit",      "energy has to be bought",
                                    "Energie inkopen voor groep", PAINT_COLOUR, 0xE0A21B,
                                    .reading = true, .arrow = DISPLAY_ARROW_DOWN },
+    [STATUS_VIEW_PRICES]       = { "prices", "Dutch quarter-hour day-ahead prices",
+                                   "Stroomprijzen", PAINT_PRICES, 0x14324A, .live = true },
     [STATUS_VIEW_BALANCED]     = { "balanced",     "supply and demand match",
                                    "In balans",         PAINT_COLOUR, 0x243028, .reading = true },
     [STATUS_VIEW_KEYS_NEEDED]  = { "keys-needed",  "no API credentials stored",
@@ -121,6 +124,7 @@ static const struct {
 static const status_view_state_t s_browsable [] = {
     STATUS_VIEW_REPORT,
     STATUS_VIEW_ABOUT,
+    STATUS_VIEW_PRICES,
     STATUS_VIEW_STARTING,
     STATUS_VIEW_SURPLUS,
     STATUS_VIEW_DEFICIT,
@@ -457,6 +461,7 @@ esp_err_t status_view_init(void)
 
 static void s_open_portal(void);
 static void s_check_for_update(void);
+static void s_toggle_prices(void);
 
 static const char *s_portal_button(void)
 {
@@ -483,7 +488,8 @@ static const struct {
     void        (*run)   (void);
 } s_action [STATUS_VIEW_STATE_COUNT] = {
     [STATUS_VIEW_REPORT] = { s_portal_button, s_open_portal },
-    [STATUS_VIEW_ABOUT]  = { s_update_button, s_check_for_update }
+    [STATUS_VIEW_ABOUT]  = { s_update_button, s_check_for_update },
+    [STATUS_VIEW_PRICES] = { day_ahead_view_action_label, s_toggle_prices }
 };
 
 
@@ -509,7 +515,12 @@ static esp_err_t s_paint(status_view_state_t state)
 
     esp_err_t err;
 
-    if (s_view [state].paint == PAINT_ABOUT) {
+    if (state != STATUS_VIEW_PRICES) day_ahead_view_hide();
+
+    if (s_view [state].paint == PAINT_PRICES) {
+        err = day_ahead_view_show();
+    }
+    else if (s_view [state].paint == PAINT_ABOUT) {
         s_build_about();
         err = display_show_about(s_view [state].label, s_about,
                                  PROJECT_PAGE, s_action_label_for(state),
@@ -673,6 +684,12 @@ static void s_check_for_update(void)
     s_start_browsing();
 }
 
+
+static void s_toggle_prices(void)
+{
+    day_ahead_view_toggle();
+    s_start_browsing();
+}
 
 void status_view_action(void)
 {

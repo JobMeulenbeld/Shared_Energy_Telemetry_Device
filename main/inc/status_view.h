@@ -35,6 +35,7 @@ typedef enum {
     STATUS_VIEW_ABOUT,          //  Who made this, which build, where to read more
     STATUS_VIEW_SETUP_DONE,     //  Credentials just accepted; setup is finished
     STATUS_VIEW_UPDATING,       //  Fetching and installing new firmware
+    STATUS_VIEW_PRICES,         //  Independent Dutch day-ahead pricing screen
     STATUS_VIEW_STATE_COUNT     //  Not a state; the size of the table
 } status_view_state_t;
 

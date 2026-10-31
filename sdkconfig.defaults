@@ -57,6 +57,7 @@ CONFIG_LV_FONT_MONTSERRAT_36=y
 #  A QR code on the provisioning screen: a phone camera joins the access point
 #  from it, so nobody has to work out which network to look for.
 CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_USE_CHART=y
 
 #  Roll back to the previous firmware when a new one does not prove itself.
 #  A fresh image starts as "pending verify"; it only becomes permanent once the

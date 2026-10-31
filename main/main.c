@@ -20,6 +20,7 @@
 #include "inc/input.h"
 #include "inc/status_view.h"
 #include "inc/updater.h"
+#include "inc/day_ahead.h"
 #include "soc/gpio_num.h"
 
 static const char *TAG = "[main]";
@@ -483,6 +484,9 @@ void app_main(void)
     }
 
     ESP_ERROR_CHECK(wifi_prov_init());
+
+    // Start before provisioning can wait: prices need only Wi-Fi, not API keys.
+    s_log_if_failed("starting day-ahead prices", day_ahead_init());
 
     //  After the network is set up, before anything waits: this only arms a
     //  timer, and the first check is minutes away.
