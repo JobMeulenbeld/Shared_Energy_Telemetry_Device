@@ -2,6 +2,8 @@ idf_component_register(
     SRCS
         "main.c"
         "src/energyboxx_api.c"
+        "src/day_ahead_model.c"
+        "src/day_ahead_json.c"
         "src/wifi_provisioning.c"
         "src/wifi_web.c"
         "src/dns_server.c"

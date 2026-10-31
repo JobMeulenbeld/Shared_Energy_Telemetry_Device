@@ -116,3 +116,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           idf.py size
+
+      - name: Test the EnergyZero response parser
+        shell: bash
+        run: make -C test check-json
