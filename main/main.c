@@ -338,7 +338,10 @@ static void energyboxx_task(void *pvParameters)
         {
             ESP_LOGE(TAG, "Failed to perform API call: %s", esp_err_to_name(err));
             data_connection_ok = false;
-            energyboxx_api_set_renew_token(true);
+            // Only 401/403 invalidate the token; a network timeout does not.
+            if (err == ESP_ERR_INVALID_STATE) {
+                energyboxx_api_set_renew_token(true);
+            }
             s_api_backoff_wait();
             continue;
         }
